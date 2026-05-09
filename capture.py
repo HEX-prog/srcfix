@@ -402,9 +402,9 @@ def get_camera():
         cam = CaptureCardCamera(region)
         return cam, region
     elif config.capturer_mode.lower() == "udp":
-        region = get_region()
-        cam = UDPCamera(region)
-        return cam, region
+        # For UDP: Don't pre-calculate region, let UDPCamera handle it dynamically
+        cam = UDPCamera()
+        return cam, None
     else:
         # Default to MSS if unknown mode
         print(f"[WARN] Unknown capturer_mode: {config.capturer_mode}, defaulting to MSS")
@@ -414,15 +414,12 @@ def get_camera():
 
 
 class UDPCamera:
-    def __init__(self, region=None):
+    def __init__(self):
         """
         Initialize UDP camera for receiving MJPEG stream from OBS Studio
         
-        Args:
-            region: Optional region tuple (left, top, right, bottom) for cropping
-                   Note: For UDP mode, we typically get the full frame like NDI
+        Dynamic region calculation ensures frame is always centered.
         """
-        self.region = region
         self.udp_receiver = None
         self.running = True
         self.last_valid_frame = None
@@ -453,20 +450,19 @@ class UDPCamera:
 
     def get_latest_frame(self):
         """
-        Get the latest frame from UDP stream with robust error handling
+        Get the latest frame from UDP stream with dynamic centering
         
         Returns:
             numpy.ndarray or None: Latest frame or None if no frame available
         """
         if not self.udp_receiver or not self.udp_receiver.is_connected:
-            return self.last_valid_frame  # Return last valid frame if disconnected
+            return self.last_valid_frame
         
         try:
             # Get current frame from UDP receiver
             frame = self.udp_receiver.get_current_frame()
             
             if frame is None:
-                # If no new frame, return last valid frame to avoid empty frames
                 return self.last_valid_frame
             
             # Validate frame dimensions and data
@@ -480,26 +476,30 @@ class UDPCamera:
             # Reset retry count on successful frame
             self.frame_retry_count = 0
             
-            # Update config with actual UDP frame dimensions FIRST
-            # This is critical for proper region calculation
-            config.udp_width, config.udp_height = frame.shape[1], frame.shape[0]
+            # Update config with actual UDP frame dimensions
+            height, width = frame.shape[:2]
+            config.udp_width = width
+            config.udp_height = height
             
-            # Apply region cropping if specified
-            if self.region:
-                x1, y1, x2, y2 = self.region
-                # Ensure region is within frame bounds using actual frame dimensions
-                height, width = frame.shape[:2]
-                x1 = max(0, min(x1, width))
-                y1 = max(0, min(y1, height))
-                x2 = max(x1, min(x2, width))
-                y2 = max(y1, min(y2, height))
-                
-                if x2 > x1 and y2 > y1:
-                    frame = frame[y1:y2, x1:x2]
-                    print(f"[UDP] Frame cropped to region: ({x1},{y1}) to ({x2},{y2}) from {width}x{height}")
-                else:
-                    print(f"[UDP] Invalid region bounds: ({x1},{y1},{x2},{y2}) for frame {width}x{height}")
-                    return self.last_valid_frame
+            # ✅ DYNAMIC REGION CALCULATION - Calculate region based on ACTUAL frame dimensions
+            fov_x = int(getattr(config, "fov_x_size", getattr(config, "region_size", 200)))
+            fov_y = int(getattr(config, "fov_y_size", getattr(config, "region_size", 200)))
+            
+            # Clamp FOV to frame dimensions
+            fov_x = max(1, min(fov_x, width))
+            fov_y = max(1, min(fov_y, height))
+            
+            # Calculate centered region
+            left = max(0, (width - fov_x) // 2)
+            top = max(0, (height - fov_y) // 2)
+            right = min(width, left + fov_x)
+            bottom = min(height, top + fov_y)
+            
+            # Apply region cropping to get centered portion
+            if right > left and bottom > top:
+                frame = frame[top:bottom, left:right]
+                # Debug output (can be disabled)
+                # print(f"[UDP] Frame centered: {fov_x}x{fov_y} from {width}x{height} at ({left},{top})")
             
             # Store as last valid frame
             self.last_valid_frame = frame.copy()
