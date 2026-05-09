@@ -480,10 +480,14 @@ class UDPCamera:
             # Reset retry count on successful frame
             self.frame_retry_count = 0
             
+            # Update config with actual UDP frame dimensions FIRST
+            # This is critical for proper region calculation
+            config.udp_width, config.udp_height = frame.shape[1], frame.shape[0]
+            
             # Apply region cropping if specified
             if self.region:
                 x1, y1, x2, y2 = self.region
-                # Ensure region is within frame bounds
+                # Ensure region is within frame bounds using actual frame dimensions
                 height, width = frame.shape[:2]
                 x1 = max(0, min(x1, width))
                 y1 = max(0, min(y1, height))
@@ -492,15 +496,13 @@ class UDPCamera:
                 
                 if x2 > x1 and y2 > y1:
                     frame = frame[y1:y2, x1:x2]
+                    print(f"[UDP] Frame cropped to region: ({x1},{y1}) to ({x2},{y2}) from {width}x{height}")
                 else:
-                    print(f"[UDP] Invalid region bounds: ({x1},{y1},{x2},{y2})")
+                    print(f"[UDP] Invalid region bounds: ({x1},{y1},{x2},{y2}) for frame {width}x{height}")
                     return self.last_valid_frame
             
             # Store as last valid frame
             self.last_valid_frame = frame.copy()
-            
-            # Update config with frame dimensions for FOV calculations
-            config.udp_width, config.udp_height = frame.shape[1], frame.shape[0]
             
             return frame
             
